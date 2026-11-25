@@ -10,44 +10,47 @@ import (
 
 func init() { plugin.Register("ready", setup) }
 
+type readinessBlocksKey struct{}
+
+type readinessBlock struct {
+	config  *dnsserver.Config
+	monitor monitorType
+}
+
 func setup(c *caddy.Controller) error {
-	plugins.Reset()
 	addr, monType, err := parse(c)
 	if err != nil {
 		return plugin.Error("ready", err)
 	}
 
-	if monType == monitorTypeContinuously {
-		plugins.keepReadiness = true
-	} else {
-		plugins.keepReadiness = false
+	blocks, _ := c.Get(readinessBlocksKey{}).(*[]readinessBlock)
+	if blocks == nil {
+		blocks = new([]readinessBlock)
+		c.Set(readinessBlocksKey{}, blocks)
+		registerChecks := func() error {
+			var checks []readinessCheck
+			for _, block := range *blocks {
+				for _, p := range block.config.Handlers() {
+					if r, ok := p.(Readiness); ok {
+						checks = append(checks, readinessCheck{p.Name(), r, block.monitor})
+					}
+				}
+			}
+			plugins.replace(checks)
+			return nil
+		}
+		c.OnStartup(registerChecks)
+		c.OnRestartFailed(registerChecks)
 	}
+	*blocks = append(*blocks, readinessBlock{dnsserver.GetConfig(c), monType})
 
 	rd := &ready{Addr: addr}
-
-	uniqAddr.Set(addr, rd.onStartup)
-	c.OnStartup(func() error { uniqAddr.Set(addr, rd.onStartup); return nil })
-	c.OnRestartFailed(func() error { uniqAddr.Set(addr, rd.onStartup); return nil })
-
-	c.OnStartup(func() error { return uniqAddr.ForEach() })
-	c.OnRestartFailed(func() error { return uniqAddr.ForEach() })
-
-	c.OnStartup(func() error {
-		for _, p := range dnsserver.GetConfig(c).Handlers() {
-			if r, ok := p.(Readiness); ok {
-				plugins.Append(r, p.Name())
-			}
-		}
-		return nil
-	})
-	c.OnRestartFailed(func() error {
-		for _, p := range dnsserver.GetConfig(c).Handlers() {
-			if r, ok := p.(Readiness); ok {
-				plugins.Append(r, p.Name())
-			}
-		}
-		return nil
-	})
+	startListener := func() error {
+		uniqAddr.Set(addr, rd.onStartup)
+		return uniqAddr.ForEach()
+	}
+	c.OnStartup(startListener)
+	c.OnRestartFailed(startListener)
 
 	c.OnRestart(rd.onFinalShutdown)
 	c.OnFinalShutdown(rd.onFinalShutdown)

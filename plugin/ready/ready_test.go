@@ -21,7 +21,8 @@ func init() { clog.Discard() }
 func TestReady(t *testing.T) {
 	rd := &ready{Addr: ":0"}
 	e := &erratic.Erratic{}
-	plugins.Append(e, "erratic")
+	plugins.replace([]readinessCheck{{"erratic", e, monitorTypeUntilReady}})
+	t.Cleanup(func() { plugins.replace(nil) })
 
 	if err := rd.onStartup(); err != nil {
 		t.Fatalf("Unable to startup the readiness server: %v", err)
@@ -74,8 +75,8 @@ func TestReady(t *testing.T) {
 func TestReady_Continuously(t *testing.T) {
 	rd := &ready{Addr: ":0"}
 	e := &erratic.Erratic{}
-	plugins.Append(e, "erratic")
-	plugins.keepReadiness = true
+	plugins.replace([]readinessCheck{{"erratic", e, monitorTypeContinuously}})
+	t.Cleanup(func() { plugins.replace(nil) })
 
 	if err := rd.onStartup(); err != nil {
 		t.Fatalf("Unable to startup the readiness server: %v", err)
