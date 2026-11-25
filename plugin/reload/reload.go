@@ -4,15 +4,12 @@ package reload
 import (
 	"bytes"
 	"crypto/sha512"
-	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"time"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/caddy/caddyfile"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -37,6 +34,7 @@ func newReload() *reload {
 func (r *reload) shutdown() error {
 	r.shutdownOnce.Do(func() {
 		close(r.quit)
+		r.removeVersion()
 	})
 	return nil
 }
@@ -91,8 +89,9 @@ func hook(event caddy.EventName, info any) error {
 	if r == nil || r.usage() == unused {
 		return nil
 	}
-	sha512sum := r.configHash
-	log.Infof("Running configuration SHA512 = %x\n", sha512sum)
+	lastAttemptedHash := r.configHash
+	log.Infof("Running configuration SHA512 = %x\n", r.configHash)
+	r.publishVersion()
 	quit := r.quit
 	interval := r.interval()
 
@@ -113,10 +112,9 @@ func hook(event caddy.EventName, info any) error {
 					continue
 				}
 				s := sha512.Sum512(parsedCorefile)
-				if s != sha512sum {
-					reloadInfo.Delete(prometheus.Labels{"hash": "sha512", "value": hex.EncodeToString(sha512sum[:])})
+				if s != lastAttemptedHash {
 					// Let not try to restart with the same file, even though it is wrong.
-					sha512sum = s
+					lastAttemptedHash = s
 					// now lets consider that plugin will not be reload, unless appear in next config file
 					// change status of usage will be reset in setup if the plugin appears in config file
 					r.setUsage(maybeUsed)
@@ -125,7 +123,6 @@ func hook(event caddy.EventName, info any) error {
 						return
 					}
 					_, err := instance.Restart(corefile)
-					reloadInfo.WithLabelValues("sha512", hex.EncodeToString(sha512sum[:])).Set(1)
 					if err != nil {
 						log.Errorf("Corefile changed but reload failed: %s", err)
 						failedCount.Add(1)

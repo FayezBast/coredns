@@ -23,6 +23,9 @@ import (
 	_ "github.com/coredns/coredns/plugin/whoami"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var registerImportMutation sync.Once
@@ -180,6 +183,31 @@ func TestReloadImportsConverge(t *testing.T) {
 			t.Fatal("reload did not complete the instance handoff")
 		}
 	}
+
+	t.Run("failed reload retains version", func(t *testing.T) {
+		parsed, err := parse(input)
+		require.NoError(t, err)
+		const metricName = "coredns_reload_version_info"
+		version := fmt.Sprintf(`# HELP coredns_reload_version_info A metric with a constant '1' value labeled by hash, and value which type of hash generated.
+# TYPE coredns_reload_version_info gauge
+coredns_reload_version_info{hash="sha512",value="%x"} 1
+`, sha512.Sum512(parsed))
+		compareVersion := func() error {
+			return testutil.CollectAndCompare(reloadInfo, strings.NewReader(version), metricName)
+		}
+		require.EventuallyWithT(t, func(t *assert.CollectT) {
+			assert.NoError(t, compareVersion())
+		}, 5*time.Second, 20*time.Millisecond)
+
+		failures := testutil.ToFloat64(failedCount)
+		// This parses as a Corefile but is rejected during template setup.
+		require.NoError(t, os.WriteFile(importPath, []byte("template IN A {\n unknown_option\n}\n"), 0600))
+		require.Eventually(t, func() bool {
+			return testutil.ToFloat64(failedCount) > failures
+		}, 5*time.Second, 20*time.Millisecond)
+		require.NoError(t, queryImportAnswer("udp", addresses["udp"], "192.0.2.3"))
+		require.NoError(t, compareVersion())
+	})
 }
 
 func queryImportAnswer(network, address, want string) error {
